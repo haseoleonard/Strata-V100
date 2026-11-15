@@ -10479,6 +10479,9 @@ int main(int argc, char** argv) {
         // failed): a request cancelled here keeps them as the live conversation instead of dropping what it restored
         bool pp_exact = false;
         Clock::time_point pp_t0 = Clock::now();
+        // BPP: the batch slot the prompt being read belongs to (admit_slot; -1: solo).  Atomic: the on_chunk
+        // callback prints its slot-tagged twin of PP from the prompt read's own thread (--prefill-pipe).
+        std::atomic<int> pp_slot{-1};
         int64_t recent_kv_cells = 0;
         auto last_kv_activity = Clock::now();
         // #879: this request met a window whose head logits were not all finite (nonfinite_hit): it ends with
@@ -11078,6 +11081,9 @@ int main(int argc, char** argv) {
             const double ms = std::chrono::duration<double, std::milli>(Clock::now() - pp_t0).count();
             std::printf("PP %lld %lld %.0f %.1f\n", (long long) done, (long long) pp_total, ms,
                         ms > 0.0 ? 1000.0 * (double) (done - pp_from) / ms : 0.0);
+            if (pp_slot.load() >= 0)   // BPP <slot> <read> <total> <ms> <rate>: PP's additive slot-tagged twin
+                std::printf("BPP %d %lld %lld %.0f %.1f\n", pp_slot.load(), (long long) done,
+                            (long long) pp_total, ms, ms > 0.0 ? 1000.0 * (double) (done - pp_from) / ms : 0.0);
             strata::core::progress_at("reading the prompt (batched), done up to token", done);
             strata::core::progress_beat();
             std::fflush(stdout);
@@ -12349,7 +12355,7 @@ int main(int argc, char** argv) {
                         "conversation_cache_disk_bytes=%llu conversation_cache_disk_recoveries=%llu "
                         "conversation_cache_disk_corruptions=%llu conversation_cache_keep_root=%d "
                         "conversation_cache_disk_keep_root=%d prefill_cap=%lld prefill_stages=%d stream_all_min=%lld "
-                        "prefill_pipe=%g%s prefill_only=1 engine=" STRATA_VERSION "\n",
+                        "prefill_pipe=%g%s prefill_only=1 ppv=2 engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
@@ -14647,6 +14653,7 @@ int main(int argc, char** argv) {
             pp_reached = read_from;
             pp_exact = true;   // a restore, a checkpoint mount or a zeroed session: the state is exactly at read_from
             pp_t0 = r0;
+            pp_slot = admit_slot;   // BPP: every PP of this read gets the slot's twin (admit_slot: -1 solo, BGEN b)
             pp_next_check = reread_to > 0 || !req_ckpt ? INT64_MAX : resume + o.prompt_cache_every;   // ckpt=0: none
             pp_tail_saved = reread_to > 0 || !req_ckpt;   // ckpt=0 (#861): no tail checkpoint either
             {
@@ -14655,6 +14662,14 @@ int main(int argc, char** argv) {
                 std::fill(part_next.begin(), part_next.end(), pp_next_check);
             }
             std::printf("RESUME %lld\n", (long long) resume);   // before reading: this many prompt tokens are reused
+            if (admit_slot >= 0)   // BRESUME <slot> <n>: the per-slot cached prefix the server can count as cache
+                std::printf("BRESUME %d %lld\n", admit_slot, (long long) resume);
+            // llama.cpp's first prompt_progress arrives when the prompt read STARTS, not at its first chunk: an
+            // opening PP with processed = the cached prefix (0 work done, 0 ms) so a progress bar shows 0% right
+            // away.  The 3-field form keeps the server's rate estimate unset (a real rate comes with chunk 1).
+            std::printf("PP %lld %lld 0\n", (long long) read_from, (long long) n);
+            if (admit_slot >= 0)   // and this slot's own opening, the BPP twin of the line above
+                std::printf("BPP %d %lld %lld 0 0.0\n", admit_slot, (long long) read_from, (long long) n);
             strata::core::progress_at("reading the prompt, from token", read_from);
             std::fflush(stdout);
             // A SHORT PART OF THE PROMPT - the new message of a chat that continues from a checkpoint, the assistant
@@ -14784,6 +14799,9 @@ int main(int argc, char** argv) {
                 const double ms = std::chrono::duration<double, std::milli>(Clock::now() - pp_t0).count();
                 std::printf("PP %lld %lld %.0f %.1f\n", (long long) b, (long long) pp_total, ms,
                             ms > 0.0 ? 1000.0 * (double) (b - pp_from) / ms : 0.0);
+                if (pp_slot.load() >= 0)   // BPP: the windows read belongs to this slot
+                    std::printf("BPP %d %lld %lld %.0f %.1f\n", pp_slot.load(), (long long) b,
+                                (long long) pp_total, ms, ms > 0.0 ? 1000.0 * (double) (b - pp_from) / ms : 0.0);
                 strata::core::progress_beat();
                 std::fflush(stdout);
                 return true;
@@ -14844,6 +14862,9 @@ int main(int argc, char** argv) {
                 const double ms = std::chrono::duration<double, std::milli>(Clock::now() - pp_t0).count();
                 std::printf("PP %lld %lld %.0f %.1f\n", (long long) b, (long long) pp_total, ms,
                             ms > 0.0 ? 1000.0 * (double) (b - pp_from) / ms : 0.0);
+                if (pp_slot.load() >= 0)   // BPP: the windows read belongs to this slot
+                    std::printf("BPP %d %lld %lld %.0f %.1f\n", pp_slot.load(), (long long) b,
+                                (long long) pp_total, ms, ms > 0.0 ? 1000.0 * (double) (b - pp_from) / ms : 0.0);
                 strata::core::progress_beat();
                 std::fflush(stdout);
                 return true;
@@ -15983,6 +16004,9 @@ int main(int argc, char** argv) {
                     const double ms = std::chrono::duration<double, std::milli>(Clock::now() - pp_t0).count();
                     std::printf("PP %lld %lld %.0f %.1f\n", (long long) to, (long long) pp_total, ms,
                                 ms > 0.0 ? 1000.0 * (double) (to - pp_from) / ms : 0.0);
+                    if (pp_slot.load() >= 0)   // BPP: the prompt's end reaches the server tagged as this slot's
+                        std::printf("BPP %d %lld %lld %.0f %.1f\n", pp_slot.load(), (long long) to,
+                                    (long long) pp_total, ms, ms > 0.0 ? 1000.0 * (double) (to - pp_from) / ms : 0.0);
                     std::fflush(stdout);
                 }
                 if (!sp_ok) {
