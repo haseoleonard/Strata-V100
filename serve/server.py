@@ -1183,6 +1183,12 @@ class StrataEngine:
         self.terminal_stage_sample: dict | None = None
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
+        # BPP/BRESUME (ppv=2 engines): slot -> {"read", "total", "ms", "rate", "cache"} of the slot's OWN read,
+        # parsed off the pump thread; empty with an older engine, which is why every reader keeps the fallbacks
+        self.slot_progress: dict[int, dict] = {}
+        # the solo leg of --batch (alone: GEN, not BGEN): the request id reading the prompt right now, so the global
+        # PP line can be attributed to it - no slot_live row exists there, which is why prompt_progress_slot asks here
+        self.solo_reader = None
         self.disk = None                 # DiskStats when --conversation-cache-disk is set: the L3 store's readings
         self.progress_ms = 0             # PP's own milliseconds since the prompt started (its third field)
         self.reused = 0                  # RESUME: prompt tokens not read again (a client takes them out of the work)
@@ -1390,6 +1396,20 @@ class StrataEngine:
                 if sample is not None and self.proc is proc:
                     self.terminal_stage_sample = {**sample, "observed_monotonic": time.monotonic()}
                 continue
+            if line.startswith(("BPP ", "BRESUME ")):           # a BPP-capable engine (INFO ppv=2): per-slot read state
+                f = line.split()                                  # BPP <slot> <read> <total> <ms> <rate>
+                try:                                              # BRESUME <slot> <n>: cached prefix of that slot's prompt
+                    if f[0] == "BPP" and len(f) >= 4:
+                        self.slot_progress[int(f[1])] = {"read": int(f[2]), "total": int(f[3]),
+                                                         "ms": float(f[4]) if len(f) >= 5 else 0.0,
+                                                         "rate": float(f[5]) if len(f) >= 6 else 0.0,
+                                                         "cache": self.slot_progress.get(int(f[1]), {}).get("cache", 0)}
+                    elif f[0] == "BRESUME" and len(f) >= 3:
+                        self.slot_progress[int(f[1])] = {"read": 0, "total": 0, "ms": 0.0, "rate": 0.0,
+                                                         "cache": int(f[2])}
+                except (IndexError, ValueError):
+                    pass
+                continue                        # additive telemetry: the global PP still drives every timeout
             if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch: a batch slot's own lines
                 try:
                     slot_q[int(line.split()[1])].put(line)
@@ -1987,6 +2007,7 @@ class StrataEngine:
                     if started is not None:
                         started()
                     phase = "solo"
+                    self.solo_reader = getattr(cancel, "_strata_request_id", None)
                     self._ctl_mode, self._ctl_result, self._yielded = "solo", None, None
                     self._ctl_erred = False
                     def others():
@@ -2013,6 +2034,7 @@ class StrataEngine:
                             give_way()
                             yield None
                     phase = "none"                          # its DONE is read
+                    self.solo_reader = None
                     while pending:
                         t = pending.pop(0)
                         out.append(t)
@@ -2106,7 +2128,7 @@ class StrataEngine:
                     deadline = getattr(cancel, "_strata_queue_deadline", None)
                     if deadline is not None and time.monotonic() >= deadline:
                         raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
-                    self.slot_live[slot] = live
+                    self.open_slot(slot, live)             # (drops the numbers a previous read left behind)
                     self._last_done = None                  # (#879: this admission's DONE decides below)
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     if deadline is not None:
@@ -2128,8 +2150,14 @@ class StrataEngine:
                             asked = True
 
                     def note_progress():
-                        # the terminal layer's live prompt counter (the batch admission path)
-                        if self.progress and live["state"] == "reading":
+                        # the terminal layer's live prompt counter (the batch admission path): this slot's own
+                        # BPP numbers when the engine prints them (ppv=2), else the global PP as before
+                        if live["state"] != "reading":
+                            return
+                        sp = self.slot_progress.get(slot)
+                        if sp and sp.get("total"):
+                            live["prompt_read"] = sp["read"]
+                        elif self.progress:
                             live["prompt_read"] = self.progress[0]
                     try:
                         for x in self._control(cancel, pending.append, on_quiet=lambda: (ask(), note_progress())):
@@ -2233,6 +2261,7 @@ class StrataEngine:
                             break
                         return
         finally:
+            self.solo_reader = None           # whatever leg ended: no request owns the global PP line now
             # a consumer that left early (or an error): keep the engine and this server in step
             btrace("finally phase", phase, "slot", slot, "holding", holding)
             try:
@@ -2338,6 +2367,14 @@ class StrataEngine:
                 busy_in[self.slot_group[b]] = busy_in.get(self.slot_group[b], 0) + 1
         return min(free, key=lambda b: (busy_in.get(self.slot_group[b], 0) if self.slot_groups > 1 else 0,
                                         bool(self.slot_held[b]), self.slot_used[b]))
+
+    def open_slot(self, slot: int, live: dict) -> None:
+        """Admission: publish a slot's live row.  slot_progress is only ever read as "this slot's current read", so
+        the numbers the PREVIOUS read on this slot left there must go with its row: a heartbeat that fires before
+        the engine's first BPP line of the new read would otherwise report the old read's tokens (a fresh admission
+        showing 18,658 of 18,681 read, or None from the short-read gate, for a prompt of 9,000 tokens)."""
+        self.slot_progress.pop(slot, None)
+        self.slot_live[slot] = live
 
     def slots_view(self) -> list[dict]:
         """/metrics: each batch slot - idle (with the tokens it holds for a next turn), reading or decoding."""
@@ -6050,6 +6087,47 @@ def prompt_progress(svc: Service):
             "time_ms": int(getattr(engine, "progress_ms", 0) or 0)}
 
 
+def prompt_progress_slot(svc: Service, request_id):
+    """`prompt_progress` for one request while the engine runs with --batch ("parallel"): a bare PP line is one
+    global line for the whole engine, never this request's alone, which is why prompt_progress() says None there.
+    The batch admission path already copies the live prompt counter into the slot's own /metrics row (`note_progress`
+    under the control lock, per PP line), so find the slot holding this request - _run stamps request_id onto the
+    cancel event and the admission records it in slot_live - and build the same four fields from it.  `cache` is 0
+    (a batched read prints no per-slot RESUME; a reused prefix only makes the bar a little behind), `time_ms` runs
+    from the admission.  None when this request is not reading a prompt right now: queued, decoding, finished, or
+    the last chunk inside --short-read of the end, exactly as the solo path reports None there."""
+    if not request_id:
+        return None
+    engine = svc.engine
+    if getattr(engine, "solo_reader", None) == request_id:
+        # the solo leg of --batch: this request is the engine's only read, so the global PP line IS its progress -
+        # the same four fields prompt_progress() builds for a non-batched engine, tail gate included
+        progress = getattr(engine, "progress", None)
+        if not progress:
+            return None
+        read, total = progress
+        tail = getattr(engine, "short_read", PP_DONE_TAIL)
+        if total <= 0 or total - read <= tail:
+            return None
+        return {"total": int(total), "cache": int(getattr(engine, "reused", 0) or 0), "processed": int(read),
+                "time_ms": int(getattr(engine, "progress_ms", 0) or 0)}
+    for b, r in enumerate(getattr(svc.engine, "slot_live", [])):
+        if r is None or r.get("request_id") != request_id or r.get("state") != "reading":
+            continue
+        sp = getattr(svc.engine, "slot_progress", {}).get(b)
+        tail = getattr(svc.engine, "short_read", PP_DONE_TAIL)   # the same gate the solo path applies
+        if sp and sp.get("total"):
+            # the exact read of THIS slot (a ppv=2 engine): its own cache, milliseconds and rate
+            total, read, cache, ms = sp["total"], sp["read"], sp.get("cache", 0), sp.get("ms", 0.0)
+        else:
+            total, read = int(r.get("prompt_tokens") or 0), int(r.get("prompt_read") or 0)
+            cache, ms = 0, (time.time() - r.get("started", time.time())) * 1000
+        if total <= 0 or total - read <= tail:
+            return None
+        return {"total": total, "cache": cache, "processed": read, "time_ms": int(ms)}
+    return None
+
+
 def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel, run=None, force=None):
     """`run`: the events to send instead of Service.run's (run_with_mcp); its ("mcp", {...}) items become chunks with
     an empty delta and a `strata_mcp` field, which only the web app reads.  `force`: see Service.run."""
@@ -6072,6 +6150,11 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             # a PP line: the prompt is being read and there is nothing to say yet.  It used to be only the SSE comment;
             # now it carries the progress when the client asked, and stays the comment when there is nothing to report.
             pp = prompt_progress(svc) if want_progress else None
+            if want_progress and pp is None and getattr(svc.engine, "batch", 0) \
+                    and getattr(svc, "progress_in_batch", False):
+                # "parallel" ("progress_in_batch": true, opt-in): the global PP is not this request's, so ask which
+                # batch slot holds it.  Off by default: without the flag the batching path sends no progress, as before.
+                pp = prompt_progress_slot(svc, getattr(cancel, "_strata_request_id", None))
             yield None if pp is None else {**chunk({}), "prompt_progress": pp}
         elif kind == "mcp":
             c = chunk({})
@@ -8639,6 +8722,9 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
     svc.answer_room = cfg.get("answer_room") is not False
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
+    svc.progress_in_batch = cfg.get("progress_in_batch") is True    # "parallel": report each request's own prefill
+                                                                     # progress from its batch slot (off: no PP while
+                                                                     # batching, exactly as the engine's global line says)
     svc.tool_call_continuation = cfg.get("tool_call_continuation") is True
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
