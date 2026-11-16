@@ -2128,7 +2128,7 @@ class StrataEngine:
                     deadline = getattr(cancel, "_strata_queue_deadline", None)
                     if deadline is not None and time.monotonic() >= deadline:
                         raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
-                    self.slot_live[slot] = live
+                    self.open_slot(slot, live)             # (drops the numbers a previous read left behind)
                     self._last_done = None                  # (#879: this admission's DONE decides below)
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     if deadline is not None:
@@ -2367,6 +2367,14 @@ class StrataEngine:
                 busy_in[self.slot_group[b]] = busy_in.get(self.slot_group[b], 0) + 1
         return min(free, key=lambda b: (busy_in.get(self.slot_group[b], 0) if self.slot_groups > 1 else 0,
                                         bool(self.slot_held[b]), self.slot_used[b]))
+
+    def open_slot(self, slot: int, live: dict) -> None:
+        """Admission: publish a slot's live row.  slot_progress is only ever read as "this slot's current read", so
+        the numbers the PREVIOUS read on this slot left there must go with its row: a heartbeat that fires before
+        the engine's first BPP line of the new read would otherwise report the old read's tokens (a fresh admission
+        showing 18,658 of 18,681 read, or None from the short-read gate, for a prompt of 9,000 tokens)."""
+        self.slot_progress.pop(slot, None)
+        self.slot_live[slot] = live
 
     def slots_view(self) -> list[dict]:
         """/metrics: each batch slot - idle (with the tokens it holds for a next turn), reading or decoding."""
