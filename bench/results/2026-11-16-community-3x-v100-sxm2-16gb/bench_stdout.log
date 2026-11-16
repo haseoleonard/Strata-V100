@@ -1,0 +1,21 @@
+calibration: user=186 total=238 overhead=52
+engine marginal: headpart=71 (+overhead 52) marginal/unit=167 marginal/suffix=33
+~4K#0  total=  4143 reused=0 prompt   882.9 tok/s (4.7 s)  output 62.2 tok/s  (local size 4091)
+~4K#1  total=  4143 reused=0 prompt   926.5 tok/s (4.5 s)  output 76.5 tok/s  (local size 4091)
+~4K#2  total=  4145 reused=0 prompt   927.4 tok/s (4.5 s)  output 66.0 tok/s  (local size 4093)
+~4K#0  total=  4376 reused=0 prompt   966.0 tok/s (4.5 s)  output 70.7 tok/s  (local size 4324)
+~4K#1  total=  4375 reused=0 prompt   965.2 tok/s (4.5 s)  output 69.0 tok/s  (local size 4323)
+~4K#2  total=  4376 reused=0 prompt   965.9 tok/s (4.5 s)  output 68.0 tok/s  (local size 4324)
+~8K#0  total=  8784 reused=0 prompt  1281.8 tok/s (6.9 s)  output 73.6 tok/s  (local size 8732)
+~8K#1  total=  8788 reused=0 prompt  1273.2 tok/s (6.9 s)  output 71.9 tok/s  (local size 8736)
+~8K#2  total=  8784 reused=0 prompt  1277.2 tok/s (6.9 s)  output 86.6 tok/s  (local size 8732)
+32K#0  total= 29496 reused=0 prompt  2209.2 tok/s (13.4 s)  output 79.1 tok/s  (local size 29444)
+32K#1  total= 29493 reused=0 prompt  2199.2 tok/s (13.4 s)  output 91.2 tok/s  (local size 29441)
+32K#2  total= 29492 reused=0 prompt  2196.6 tok/s (13.4 s)  output 71.8 tok/s  (local size 29440)
+128K#0 total=117839 reused=0 prompt  2615.2 tok/s (45.1 s)  output 61.0 tok/s  (local size 117787)
+128K#1 total=117835 reused=0 prompt  2604.7 tok/s (45.2 s)  output 57.5 tok/s  (local size 117783)
+128K#2 total=117837 reused=0 prompt  2605.8 tok/s (45.2 s)  output 64.0 tok/s  (local size 117785)
+256K#0 total=256078 reused=0 prompt  2514.8 tok/s (101.8 s)  output 58.7 tok/s  (local size 256026)
+256K#1 total=256080 reused=0 prompt  2511.6 tok/s (102.0 s)  output 62.6 tok/s  (local size 256028)
+256K#2 total=256077 reused=0 prompt  2508.2 tok/s (102.1 s)  output 60.0 tok/s  (local size 256025)
+wrote bench/results/power300/matrix.json

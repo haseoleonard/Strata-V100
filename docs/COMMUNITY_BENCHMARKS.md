@@ -60,6 +60,8 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-11-16: 3x Tesla V100-SXM2-16GB (sm_70), Xeon E5-2630 v4 without AVX-512, 125.7 GiB RAM](../bench/results/2026-11-16-community-3x-v100-sxm2-16gb/README.md):
+  engine 0.1.45.7 sm_70 CUDA 12.6 build (`27c357d5`), Flash-Next IQ3_S, 262,144-token context with `--kv-resident 32768` and KV streamed from RAM; three runs each at 4,096, 8,786, 29,527, 117,837 and 256,078 prompt tokens at a 300 W power limit, plus nine recall checks up to 256k (9/9). Decode 68.5/73.6/79.1/61.0/60.0 tok/s, prompt 946/1,277/2,199/2,606/2,512 tok/s (medians). Companion 250 W and 200 W sweeps report long-context decode collapses (2.9-10.0 tok/s) that disappear at 300 W; mechanism not isolated.
 
 ## What to record
 

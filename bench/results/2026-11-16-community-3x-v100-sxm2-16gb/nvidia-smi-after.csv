@@ -1,0 +1,4 @@
+index, power.draw [W], temperature.gpu, clocks.current.sm [MHz]
+0, 39.95 W, 39, 1312 MHz
+1, 40.11 W, 43, 1312 MHz
+2, 51.46 W, 44, 1530 MHz
